@@ -431,7 +431,11 @@ alertcondition(halfThisBar,"MID50 half (confirmed-OHLC visualization)","MID50 ha
 
 var table modeStatus=table.new(position.top_right,1,1)
 if barstate.islast
-    text=bar_index<requiredBars ? "Need more candles: "+str.tostring(requiredBars+1) : mlActive ? "OLD15m ML | "+timeframe.period : "Candle rules | "+timeframe.period
+    string modeMessage = "Candle rules | " + timeframe.period
+    if bar_index < requiredBars
+        modeMessage := "Need more candles: " + str.tostring(requiredBars + 1)
+    else if mlActive
+        modeMessage := "15m ML | " + timeframe.period
     if useML and not mlTimeframe
-        text+="\n15m ML disabled on this timeframe"
-    table.cell(modeStatus,0,0,text,text_color=color.white,bgcolor=color.new(color.black,25))
+        modeMessage := modeMessage + "\n15m ML disabled on this timeframe"
+    table.cell(modeStatus, 0, 0, modeMessage, text_color=color.white, bgcolor=color.new(color.black, 25))
