@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>변곡 연구실 · 클릭 라벨링</title><link rel="stylesheet" href="/assets/style.css"></head>
+<body>
+<header><div><div class="eyebrow">HUMAN REVERSAL LAB</div><h1>당신이 보는 변곡을 학습합니다.</h1><p>차트에서 저점·고점을 찍고, 검토한 구간만 학습 데이터로 만드세요.</p></div><span class="badge">BTCUSDT · 15분봉 · 한국시간</span></header>
+<main>
+<section class="panel toolbar"><label>캔들 데이터<select id="dataset" aria-label="캔들 데이터"></select></label><label class="file">CSV 가져오기<input id="csv" type="file" accept=".csv"></label><label class="file">새 봉 이어 붙이기<input id="extendCSV" type="file" accept=".csv"></label><button id="export">라벨 백업</button><label class="file">라벨 병합<input id="backup" type="file" accept=".json"></label><span id="datasetInfo"></span></section>
+<div id="status" role="status" aria-live="polite">데이터를 불러오는 중입니다.</div>
+<section class="panel">
+<div class="chart-head"><div><h2>변곡 구간 표시</h2><p>드래그로 이동 · 휠로 확대 · 선택한 모드로 캔들 클릭</p></div><div class="navigation"><button id="prev" aria-label="이전 구간">←</button><input type="datetime-local" id="date" aria-label="한국시간 이동"><button id="jump">이동</button><button id="next" aria-label="다음 구간">→</button><button id="latest">최근</button></div></div>
+<div class="modes" role="group" aria-label="라벨 모드"><button data-mode="inspect" aria-pressed="true">둘러보기</button><button data-mode="bottom" aria-pressed="false">저점 / 롱</button><button data-mode="top" aria-pressed="false">고점 / 숏</button><button data-mode="erase" aria-pressed="false">라벨 지우기</button><label>구간 반경 ±<input id="radius" type="number" value="1" min="0" max="5" aria-label="라벨 구간 반경">봉</label><label>메모<input id="notes" maxlength="1000" placeholder="예: 거래량 이후 아래꼬리" aria-label="라벨 메모"></label><button id="undo" disabled>직전 라벨 취소</button></div>
+<div class="legend"><span class="bottom">◆ 사람 저점</span><span class="top">◆ 사람 고점</span><span>△ AI 판단 시점</span><label><input id="showBB" type="checkbox">BB50 표시</label><span id="viewport"></span></div>
+<div class="canvas-wrap"><canvas id="price" aria-label="클릭 라벨링 캔들 차트" role="img"></canvas><div id="tooltip" hidden></div></div><canvas id="volume" aria-label="거래량 차트"></canvas>
+<div class="review-row"><button id="review">현재 보이는 구간 검토 완료</button><p>직접 확인한 뒤 누르세요. 이 구간 안의 <strong>미표시된 변곡은 중립 정답</strong>으로 간주됩니다. 검토하지 않은 구간은 학습에서 제외합니다.</p></div>
+</section>
+<div class="columns">
+<section class="panel"><div class="section-head"><h2>사람이 만든 정답</h2><span id="counts"></span></div><p>클릭 위치가 실제 변곡 구간입니다. 같은 캔들을 다시 클릭하면 종류·메모가 수정됩니다.</p><div id="labels" class="scroll"></div><details><summary>검토 완료 범위</summary><div id="reviews"></div></details></section>
+<section class="panel"><h2>패턴 학습 → 미래 구간 확인</h2><p>판단 시점까지의 100봉만 입력합니다. 앞으로 <input id="horizon" type="number" min="1" max="12" value="3" aria-label="예측 범위">봉 안에 사람이 표시한 저점·고점이 오는지 학습합니다.</p><button id="train" class="primary">새 모델 학습</button><div id="job" role="status"></div><label>학습된 모델<select id="model" aria-label="학습된 모델"></select></label><div class="model-actions"><button id="predict">현재 구간 예측</button><button id="testRange">테스트 구간 보기</button></div><p id="modelNote">아직 학습된 모델이 없습니다. 라벨 수집 후 학습하세요.</p><div id="metrics"></div><p class="hint">표시되는 정밀도·재현율은 사람 라벨과의 일치도입니다. 매매 승률이나 수익률이 아닙니다. 학습·검증 구간에는 과거로 소급한 AI 신호를 표시하지 않습니다.</p></section>
+</div>
+</main><footer>라벨과 모델은 이 서버의 로컬 저장소에 남습니다. 백업 파일을 내려받아 보관하세요. 이 앱은 단일 사용자 연구용이며 주문을 전송하지 않습니다.</footer>
+<script src="/assets/app.js" defer></script></body></html>
