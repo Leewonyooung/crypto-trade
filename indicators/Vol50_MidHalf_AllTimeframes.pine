@@ -1,0 +1,437 @@
+//@version=6
+indicator("Vol50 Reversal / All Timeframes / MID Half",overlay=true,max_lines_count=500,max_labels_count=500,max_bars_back=1500)
+// All timeframes: chart-bar deadlines. Volume50 peak arms search; last5 bars define SL.
+// Optional historical ML weights are applied ONLY on15m, never transferred to other timeframes.
+// Fees used in Python: round-trip0.04%, slip0.01%/fill, PRICE reward/risk2.
+// Indicator tracks independent lots; never replaces another lot's stop/target.
+useML=input.bool(false,"Optional OLD ML: 15-minute chart ONLY")
+longThreshold=input.float(.20,"Long: new-model threshold",minval=0,maxval=1,step=.05)
+shortThreshold=input.float(.30,"Short: new-model threshold",minval=0,maxval=1,step=.05)
+wickMin=input.float(.40,"Rejection wick / range (long lower, short upper)",minval=0,maxval=1,step=.05)
+dojiMax=input.float(.10,"Max opposite-color doji body / range",minval=0,maxval=1,step=.05)
+volumeLookback=input.int(50,"Volume peak: trailing candles INCLUDING current",minval=2)
+scanBars=input.int(10,"Max bars: FIRST volume peak to actual entry",minval=2,maxval=10)
+stopBars=input.int(5,"SL: signal candle INCLUDED trailing candles",minval=1)
+startTime=input.time(0,"Entry signals start (all history by default)")
+slip=input.float(.01,"Slippage per fill %",minval=0)/100
+// Entry deadlines use observed CHART BARS, not a fixed15-minute clock.
+validTF=true
+mlTimeframe=timeframe.isminutes and timeframe.multiplier==15
+mlActive=useML and mlTimeframe
+// A tied maximum qualifies. First rank-1 transition starts a fixed, nonrefreshing window.
+peakValue=ta.highest(volume,volumeLookback)
+peak50=bar_index>=volumeLookback-1 and volume>0 and volume>=peakValue
+peakEvent=peak50 and not peak50[1]
+var int volumeAnchor=na
+bool volumeArmedNow=false
+if barstate.isconfirmed and validTF
+    if not na(volumeAnchor) and bar_index-volumeAnchor>=scanBars
+        volumeAnchor:=na
+    if na(volumeAnchor) and peakEvent
+        volumeAnchor:=bar_index
+        volumeArmedNow:=true
+// No entry on peak candle. Reserve one bar for NEXT-open entry.
+volumeContext=not na(volumeAnchor) and bar_index>=volumeAnchor and bar_index-volumeAnchor<scanBars
+volumeScan=volumeContext and bar_index>volumeAnchor
+
+// The next observed chart candle is the execution candle, even after a session gap.
+contiguous=bar_index>0
+tr=ta.tr(true)
+atr=ta.rma(tr,20)
+atr14=ta.rma(tr,14)
+atr100=ta.rma(tr,100)
+low100=ta.lowest(low,100)
+high100=ta.highest(high,100)
+span100=high100-low100
+rng=high-low
+f_div(float a,float b) =>
+    b!=0 ? a/b : na
+body=f_div(close-open,rng)
+lowerWick=f_div(math.min(open,close)-low,rng)
+upperWick=f_div(high-math.max(open,close),rng)
+closeLocation=f_div(close-low,rng)
+volumeRatio20=f_div(volume,ta.sma(volume,20)[1])
+ema10=ta.ema(close,10)
+ema20=ta.ema(close,20)
+ema50=ta.ema(close,50)
+ema100=ta.ema(close,100)
+delta=ta.change(close)
+u14=ta.rma(math.max(delta,0),14)
+d14=ta.rma(math.max(-delta,0),14)
+u30=ta.rma(math.max(delta,0),30)
+d30=ta.rma(math.max(-delta,0),30)
+f_rsi(float u,float d) =>
+    u==0 and d==0 ? 50.0 : d==0 ? 100.0 : 100-100/(1+u/d)
+rsi14=f_rsi(u14,d14)
+rsi30=f_rsi(u30,d30)
+stoch14=f_div(close-ta.lowest(low,14),ta.highest(high,14)-ta.lowest(low,14))
+upMove=ta.change(high)
+downMove=-ta.change(low)
+plusDM=upMove>downMove and upMove>0 ? upMove : 0.0
+minusDM=downMove>upMove and downMove>0 ? downMove : 0.0
+diPlus=f_div(100*ta.rma(plusDM,14),atr14)
+diMinus=f_div(100*ta.rma(minusDM,14),atr14)
+adx14=ta.rma(f_div(100*math.abs(diPlus-diMinus),diPlus+diMinus),14)
+// Oldest tie wins, matching numpy.argmin/argmax on the previous100 candles.
+int lowAge=100
+int highAge=100
+float oldLow=low[100]
+float oldHigh=high[100]
+int lowTouches=0
+int highTouches=0
+if bar_index>=100
+    for j=99 to 1
+        if low[j]<oldLow
+            oldLow:=low[j]
+            lowAge:=j
+        if high[j]>oldHigh
+            oldHigh:=high[j]
+            highAge:=j
+    for j=0 to 99
+        lowTouches+=low[j]<=low100+.25*atr ? 1 : 0
+        highTouches+=high[j]>=high100-.25*atr ? 1 : 0
+
+// Same64 feature definitions and exported scaler/logistic coefficients.
+x0=f_div(close-low100,span100) // position100
+x1=f_div(close-low100,atr) // low_distance_atr
+x2=f_div(high100-close,atr) // high_distance_atr
+x3=f_div(low-low100,atr) // low_wick_distance_atr
+x4=f_div(high100-high,atr) // high_wick_distance_atr
+x5=f_div(span100,atr) // range100_atr
+x6=f_div(ta.highest(high,20)-ta.lowest(low,20),span100) // range20_to100
+x7=f_div(ta.highest(high,5)-ta.lowest(low,5),ta.highest(high,20)-ta.lowest(low,20)) // range5_to20
+x8=low<=ta.lowest(low,100)[1] ? 1.0 : 0.0 // new_low100
+x9=high>=ta.highest(high,100)[1] ? 1.0 : 0.0 // new_high100
+x10=body // body_fraction
+x11=lowerWick // lower_wick_fraction
+x12=upperWick // upper_wick_fraction
+x13=closeLocation // close_location
+x14=f_div(rng,atr) // range_atr
+x15=f_div(close-open,atr) // body_atr
+x16=f_div(open-close[1],atr) // gap_atr
+x17=f_div(close-close[1],atr) // return1_atr
+x18=f_div(close-close[3],atr) // return3_atr
+x19=f_div(close-close[5],atr) // return5_atr
+x20=f_div(close-close[10],atr) // return10_atr
+x21=f_div(close-close[20],atr) // return20_atr
+x22=f_div(close-close[50],atr) // return50_atr
+x23=f_div(close-close[100],atr) // return100_atr
+x24=ta.sma(close>open ? 1.0 : 0.0,3) // bull_fraction3
+x25=ta.sma(lowerWick,3) // lower_wick_mean3
+x26=ta.sma(upperWick,3) // upper_wick_mean3
+x27=ta.sma(close>open ? 1.0 : 0.0,10) // bull_fraction10
+x28=ta.sma(lowerWick,10) // lower_wick_mean10
+x29=ta.sma(upperWick,10) // upper_wick_mean10
+x30=ta.sma(close>open ? 1.0 : 0.0,20) // bull_fraction20
+x31=ta.sma(lowerWick,20) // lower_wick_mean20
+x32=ta.sma(upperWick,20) // upper_wick_mean20
+x33=f_div(close-ema10,atr) // ema10_distance_atr
+x34=f_div(ema10-ema10[5],atr) // ema10_slope5_atr
+x35=f_div(close-ema20,atr) // ema20_distance_atr
+x36=f_div(ema20-ema20[5],atr) // ema20_slope5_atr
+x37=f_div(close-ema50,atr) // ema50_distance_atr
+x38=f_div(ema50-ema50[5],atr) // ema50_slope5_atr
+x39=f_div(close-ema100,atr) // ema100_distance_atr
+x40=f_div(ema100-ema100[5],atr) // ema100_slope5_atr
+x41=f_div(atr,atr100) // atr20_to100
+x42=f_div(atr,atr[5])-1 // atr_growth5
+x43=rsi14 // rsi14
+x44=rsi14-rsi14[3] // rsi14_change3
+x45=rsi30 // rsi30
+x46=rsi30-rsi30[3] // rsi30_change3
+x47=stoch14 // stoch14
+x48=stoch14-stoch14[3] // stoch14_change3
+x49=diPlus-diMinus // di_difference
+x50=adx14 // adx14
+x51=adx14-adx14[3] // adx14_change3
+x52=f_div(ta.lowest(low,20)-ta.lowest(low,80)[20],atr) // higher_low20_atr
+x53=f_div(ta.highest(high,80)[20]-ta.highest(high,20),atr) // lower_high20_atr
+x54=volumeRatio20 // volume_ratio20
+x55=f_div(volume,ta.sma(volume,100)[1]) // volume_ratio100
+x56=f_div(ta.sma(volume,3),ta.sma(volume,10)[3]) // volume_change3
+x57=f_div(math.sum(f_div(2*close-high-low,rng)*volume,20),math.sum(volume,20)) // signed_volume20
+x58=float(lowAge) // previous_low_age
+x59=float(highAge) // previous_high_age
+x60=rsi14-rsi14[lowAge] // rsi_vs_previous_low
+x61=rsi14-rsi14[highAge] // rsi_vs_previous_high
+x62=float(lowTouches) // low_touch_count100
+x63=float(highTouches) // high_touch_count100
+low5=ta.lowest(low,stopBars)
+high5=ta.highest(high,stopBars)
+signalMid=ta.sma(close,49)
+midTouch=signalMid[1]
+bbMiddle=ta.sma(close,50)
+int anchorAge=na(volumeAnchor) ? 0 : bar_index-volumeAnchor
+x64=volumeScan ? float(anchorAge) : na
+x65=volumeScan ? f_div(volume,volume[anchorAge]) : na
+x66L=f_div(signalMid-close,atr)
+x66S=-x66L
+x67L=f_div(close-low5,atr)
+x67S=f_div(high5-close,atr)
+x68L=(signalMid-close)/math.max(2*(close-low5),0.000000001)
+x68S=(close-signalMid)/math.max(2*(high5-close),0.000000001)
+f_term(float value,float fill,float weight,float missingWeight) =>
+    nz(value,fill)*weight+(na(value) ? missingWeight : 0)
+float logitL=-0.044127208885699876
+logitL+=f_term(x0,0.16290885805943983,0.61800211696815233,0)
+logitL+=f_term(x1,1.5096097084548412,0.065918222186314337,0)
+logitL+=f_term(x2,8.2665938492094124,0.0052623950196260755,0)
+logitL+=f_term(x3,0.29492293105719036,-0.31042080427893076,0)
+logitL+=f_term(x4,7.9862096237910585,0.0063992624244294293,0)
+logitL+=f_term(x5,9.7762035576642514,0.0084218929043684033,0)
+logitL+=f_term(x6,0.66564814577950526,-0.36836935268944115,0)
+logitL+=f_term(x7,0.61790015411171695,-0.41772307373253453,0)
+logitL+=f_term(x8,0.42622950819672129,0.05838224346784212,0)
+logitL+=f_term(x9,0,0,0)
+logitL+=f_term(x10,0.20230093399388219,-0.12966295739826433,0)
+logitL+=f_term(x11,0.58759659300310085,0.22719813260733632,0)
+logitL+=f_term(x12,0.19110168065784608,0.018419193429486422,0)
+logitL+=f_term(x13,0.79939792316956848,-0.016800973303630739,0)
+logitL+=f_term(x14,1.4950710028160028,0.1308270944306853,0)
+logitL+=f_term(x15,0.31335139500037351,0.053480376036164332,0)
+logitL+=f_term(x16,1.593577370252188e-05,49.690080387026683,0)
+logitL+=f_term(x17,0.31336733077407597,0.054464153333485504,0)
+logitL+=f_term(x18,-0.97361659684073498,-0.022104980234565429,0)
+logitL+=f_term(x19,-1.8223290768633367,0.064948424446869366,0)
+logitL+=f_term(x20,-3.1016509254304916,0.088236441774804122,0)
+logitL+=f_term(x21,-3.6414850502963225,0.022008326771648025,0)
+logitL+=f_term(x22,-4.1257820870567903,-0.037586934848992691,0)
+logitL+=f_term(x23,-4.8943212730313217,-0.024738019814312315,0)
+logitL+=f_term(x24,0.41651487553126898,0.20384993625250675,0)
+logitL+=f_term(x25,0.39653808717128064,0.26055598796604978,0)
+logitL+=f_term(x26,0.21206621200722753,0.57481764912876887,0)
+logitL+=f_term(x27,0.36848816029143899,0.28683853093641815,0)
+logitL+=f_term(x28,0.32470087135934722,1.0539931325571312,0)
+logitL+=f_term(x29,0.23127616175121743,-0.26956918557389192,0)
+logitL+=f_term(x30,0.41712204007285975,-0.00042837811205402029,0)
+logitL+=f_term(x31,0.30150114211160645,-3.4066112304565772,0)
+logitL+=f_term(x32,0.24455506802943552,-1.6683734864981965,0)
+logitL+=f_term(x33,-1.2066483195443352,0.12246310437111413,0)
+logitL+=f_term(x34,-1.4884274757859983,0.12372438575141546,0)
+logitL+=f_term(x35,-2.0253034605642068,0.074817963422177988,0)
+logitL+=f_term(x36,-1.0417943473098439,0.10554590096534409,0)
+logitL+=f_term(x37,-3.0113977809465937,-0.00082961525400941281,0)
+logitL+=f_term(x38,-0.56297850409866179,-0.14012696411357498,0)
+logitL+=f_term(x39,-3.6318181522014799,0.04368600068886519,0)
+logitL+=f_term(x40,-0.33093907857452615,0.27410550607606449,0)
+logitL+=f_term(x41,1.1457397158679914,-0.254201653676013,0)
+logitL+=f_term(x42,0.18843495192104923,-0.30074661269453684,0)
+logitL+=f_term(x43,32.036789010537433,0.019508568784472907,0)
+logitL+=f_term(x44,-2.1763746624883442,-0.0035177479283673703,0)
+logitL+=f_term(x45,37.790974216552769,0.014842193000315584,0)
+logitL+=f_term(x46,-2.0758774229683521,0.0012508789409199116,0)
+logitL+=f_term(x47,0.26408657596790874,-0.50689731396362248,0)
+logitL+=f_term(x48,0.03727919842637166,-0.069522878713535838,0)
+logitL+=f_term(x49,-25.029024614989471,-0.0070676283159379748,0)
+logitL+=f_term(x50,34.284596582946662,0.00042712592239414564,0)
+logitL+=f_term(x51,4.7296946410828049,0.029979272346741404,0)
+logitL+=f_term(x52,-2.1922805326226471,0.010143805683162465,0)
+logitL+=f_term(x53,3.4028981254042696,0.0064569150774128215,0)
+logitL+=f_term(x54,2.0103546069746017,-0.035656298401846899,0)
+logitL+=f_term(x55,2.6968939963624901,0.018534538036742324,0)
+logitL+=f_term(x56,2.3534281613158736,0.038678809517681378,0)
+logitL+=f_term(x57,-0.072504962044663404,-0.24268957220206774,0)
+logitL+=f_term(x58,17.930783242258652,0.0004625406157313201,0)
+logitL+=f_term(x59,69.0856102003643,-0.0040722647662704238,0)
+logitL+=f_term(x60,2.7241762258715689,0.0060633588089780699,0)
+logitL+=f_term(x61,-29.336531848517318,-0.0037638431820470305,0)
+logitL+=f_term(x62,1.6502732240437159,0.023444663009317926,0)
+logitL+=f_term(x63,2.1220400728597451,-0.043695051930357588,0)
+logitL+=f_term(x64,4.5063752276867035,-0.071199427187148584,0)
+logitL+=f_term(x65,0.69041766606797816,-0.15319032599278118,0)
+logitL+=f_term(x66L,3.309633724795618,0.016212814637289456,0)
+logitL+=f_term(x67L,1.4170025081244177,-0.10551057571770978,0)
+logitL+=f_term(x68L,1.4094416244013463,0.1285002671298143,0)
+scoreL=1/(1+math.exp(-math.max(-60,math.min(60,logitL))))
+float logitS=2.474735739786678
+logitS+=f_term(x0,0.85715510399696393,-0.74570932093714515,0)
+logitS+=f_term(x1,9.1318368629165132,0.0013557377381876623,0)
+logitS+=f_term(x2,1.4079813965907253,-0.046645112415874761,0)
+logitS+=f_term(x3,8.8353128504641845,0.00035241283529103515,0)
+logitS+=f_term(x4,0.28461840967931507,0.20972392783993135,0)
+logitS+=f_term(x5,10.539818259507237,-0.00028847422785888653,0)
+logitS+=f_term(x6,0.63421175271181451,-0.088131039849916298,0)
+logitS+=f_term(x7,0.62329551455676857,-0.074588533568037643,0)
+logitS+=f_term(x8,0,0,0)
+logitS+=f_term(x9,0.44858156028368795,0.17681561907449458,0)
+logitS+=f_term(x10,-0.18640702676561924,0.11973461470272845,0)
+logitS+=f_term(x11,0.20562753493848179,-0.17188513032418315,0)
+logitS+=f_term(x12,0.58977023369750126,-0.49639948727935818,0)
+logitS+=f_term(x13,0.21472513723768066,0.1822031396551814,0)
+logitS+=f_term(x14,1.4198869993637369,-0.073296690922055527,0)
+logitS+=f_term(x15,-0.26806174718498477,0.1428402817451177,0)
+logitS+=f_term(x16,-3.0050392498539277e-05,-3.4496019721670015,0)
+logitS+=f_term(x17,-0.26809179757748336,0.14283308992537788,0)
+logitS+=f_term(x18,1.1401867570433801,-0.0021222915914775949,0)
+logitS+=f_term(x19,1.9903066904077635,-0.066928674371280458,0)
+logitS+=f_term(x20,3.2794820690980906,0.0088208580739637336,0)
+logitS+=f_term(x21,3.9111441122523876,0.034401804329882067,0)
+logitS+=f_term(x22,4.7464906470984669,0.0082118972205854866,0)
+logitS+=f_term(x23,5.4215914007000654,-0.0088197074917961433,0)
+logitS+=f_term(x24,0.57801418439716312,0.6288317738752679,0)
+logitS+=f_term(x25,0.20701147014798171,-0.45836577184663652,0)
+logitS+=f_term(x26,0.38816358548110147,-0.076063095157368088,0)
+logitS+=f_term(x27,0.6147163120567376,-0.88974254213164572,0)
+logitS+=f_term(x28,0.23216849553142568,1.7723997442625252,0)
+logitS+=f_term(x29,0.31692932954959013,-1.0139320522082615,0)
+logitS+=f_term(x30,0.57544326241134769,-0.64097646388582685,0)
+logitS+=f_term(x31,0.24583412956882605,-4.3974813070636571,0)
+logitS+=f_term(x32,0.2943770091990946,1.8802635163379477,0)
+logitS+=f_term(x33,1.3337205720241818,-0.077507918008489038,0)
+logitS+=f_term(x34,1.5513844361203744,-0.026633413021509286,0)
+logitS+=f_term(x35,2.2126660495933246,-0.040557821880525168,0)
+logitS+=f_term(x36,1.0981359997192168,-0.012027033912495195,0)
+logitS+=f_term(x37,3.3388711091183279,-0.0096070000623185523,0)
+logitS+=f_term(x38,0.61189636079183085,0.056774277562409547,0)
+logitS+=f_term(x39,4.0809178613566575,0.020988975139865244,0)
+logitS+=f_term(x40,0.36675833691456938,0.34191321083018733,0)
+logitS+=f_term(x41,1.1314068709414264,-0.20567657390144845,0)
+logitS+=f_term(x42,0.18575099981717913,0.13036093089758827,0)
+logitS+=f_term(x43,69.039955381680869,-0.0079196969989141584,0)
+logitS+=f_term(x44,3.2477899687833323,-0.00058554732453616016,0)
+logitS+=f_term(x45,63.281890549798355,-0.0086095320215174766,0)
+logitS+=f_term(x46,2.6059542590117961,0.0029647046845084073,0)
+logitS+=f_term(x47,0.75666287487800055,-0.43502056414205392,0)
+logitS+=f_term(x48,0.003761576987843465,-0.049534481589247691,0)
+logitS+=f_term(x49,25.374420105868506,-0.0078559161658919817,0)
+logitS+=f_term(x50,34.452875198026888,0.0054596892022261822,0)
+logitS+=f_term(x51,4.5310339827345141,0.015492202280709797,0)
+logitS+=f_term(x52,3.9994769828843029,0.018363712963478798,0)
+logitS+=f_term(x53,-2.7464114413068823,-0.063717801187172227,0)
+logitS+=f_term(x54,1.9999279594877142,-0.043621569959279571,0)
+logitS+=f_term(x55,2.669393178775243,0.023736857322015102,-0.87716215726544533)
+logitS+=f_term(x56,2.3343295088392146,0.090118982642750783,0)
+logitS+=f_term(x57,0.090734140253740145,1.183650115728893,0)
+logitS+=f_term(x58,72.329787234042556,-0.00092150891156895522,0)
+logitS+=f_term(x59,16.221631205673759,-0.0042866364203516891,0)
+logitS+=f_term(x60,30.349355062742767,-0.0040174634846290727,0)
+logitS+=f_term(x61,-2.4829369766608749,-0.0041426962545296694,0)
+logitS+=f_term(x62,2.0336879432624113,0.077506481595512891,0)
+logitS+=f_term(x63,1.5762411347517731,0.11165113437335118,0)
+logitS+=f_term(x64,4.5975177304964543,-0.027061926090698993,0)
+logitS+=f_term(x65,0.66421744185160014,0.076350278969475743,0)
+logitS+=f_term(x66S,3.6664443462974878,-0.012770851244981389,0)
+logitS+=f_term(x67S,1.3146698735619442,0.076430715300591506,0)
+logitS+=f_term(x68S,1.6711393933575269,-0.058185878662719903,0)
+scoreS=1/(1+math.exp(-math.max(-60,math.min(60,logitS))))
+modelTimeOK=not mlActive or time>=1767225600000
+longCandidate=f_div(low-low100,atr)<=1 and f_div(close-low100,span100)<=.35
+shortCandidate=f_div(high100-high,atr)<=1 and f_div(close-low100,span100)>=.65
+longPattern=lowerWick>=wickMin and (close>open or math.abs(body)<=dojiMax)
+shortPattern=upperWick>=wickMin and (close<open or math.abs(body)<=dojiMax)
+requiredBars=mlActive ? 500 : math.max(99,volumeLookback-1)
+baseReady=validTF and volumeScan and bar_index>=requiredBars and time>=startTime and modelTimeOK
+longBase=baseReady and longCandidate and longPattern
+shortBase=baseReady and shortCandidate and shortPattern
+le=open*(1+slip)
+se=open*(1-slip)
+volumeEntryOK=not na(volumeAnchor[1]) and bar_index-volumeAnchor[1]<=scanBars
+// Previous candidate's next-open feasibility is KNOWN now, for causal threshold crossing.
+previousLongAdmitted=longBase[1] and contiguous and volumeEntryOK and le>low5[1] and midTouch>le
+longConfirm=barstate.isconfirmed and longBase and (not mlActive or scoreL>=longThreshold and not (previousLongAdmitted and scoreL[1]>=longThreshold))
+shortConfirm=barstate.isconfirmed and shortBase and (not mlActive or scoreS>=shortThreshold)
+buy=validTF and contiguous and volumeEntryOK and longConfirm[1] and le>low5[1] and midTouch>le
+sell=validTF and contiguous and volumeEntryOK and shortConfirm[1] and se<high5[1] and midTouch<se
+var array<int> dirs=array.new_int()
+var array<float> entries=array.new_float()
+var array<float> stops=array.new_float()
+var array<float> targets=array.new_float()
+var array<float> remains=array.new_float()
+var array<line> elines=array.new_line()
+var array<line> slines=array.new_line()
+var array<line> tlines=array.new_line()
+var array<label> labels=array.new_label()
+f_add(int dir,float ep,float stop,float score) =>
+    tp=ep+dir*2*math.abs(ep-stop)
+    array.push(dirs,dir)
+    array.push(entries,ep)
+    array.push(stops,stop)
+    array.push(targets,tp)
+    array.push(remains,1.0)
+    array.push(elines,line.new(bar_index,ep,bar_index+1,ep,color=color.blue))
+    array.push(slines,line.new(bar_index,stop,bar_index+1,stop,color=color.red))
+    array.push(tlines,line.new(bar_index,tp,bar_index+1,tp,color=color.green))
+    array.push(labels,label.new(bar_index,ep,(dir==1 ? "LONG" : "SHORT")+" #"+str.tostring(bar_index)+"\nE "+str.tostring(ep,format.mintick)+"\nSL "+str.tostring(stop,format.mintick)+"\nTP2 "+str.tostring(tp,format.mintick)+(na(score) ? "\nCandle rules" : "\nScore "+str.tostring(score,"#.000")),style=dir==1 ? label.style_label_up : label.style_label_down,color=dir==1 ? color.green : color.red,textcolor=color.white))
+if buy
+    f_add(1,le,low5[1],mlActive ? scoreL[1] : na)
+if sell
+    f_add(-1,se,high5[1],mlActive ? scoreS[1] : na)
+bool halfThisBar=false
+// Confirmed-OHLC visualization; touches fill at their LEVEL, not at candle close.
+// It cannot recover unknown intrabar chronology; SL-first except opening events.
+if barstate.isconfirmed and array.size(dirs)>0
+    for k=array.size(dirs)-1 to 0
+        dir=array.get(dirs,k)
+        ep=array.get(entries,k)
+        stop=array.get(stops,k)
+        tp=array.get(targets,k)
+        rem=array.get(remains,k)
+        lab=array.get(labels,k)
+        line.set_x2(array.get(elines,k),bar_index+1)
+        line.set_x2(array.get(slines,k),bar_index+1)
+        line.set_x2(array.get(tlines,k),bar_index+1)
+        midOK=rem>.5 and not na(midTouch) and dir*(midTouch-ep)>0 and dir*(tp-midTouch)>0
+        gapSL=dir*(open-stop)<=0
+        gapTP=dir*(open-tp)>=0
+        gapMID=midOK and dir*(open-midTouch)>=0
+        slHit=dir==1 ? low<=stop : high>=stop
+        tpHit=dir==1 ? high>=tp : low<=tp
+        midHit=midOK and (dir==1 ? high>=midTouch : low<=midTouch)
+        bool doHalf=false
+        bool exitNow=false
+        bool finalTP=false
+        if gapSL
+            exitNow:=true
+        else
+            if gapMID
+                doHalf:=true
+                rem:=.5
+            if gapTP
+                exitNow:=true
+                finalTP:=true
+            else if slHit
+                exitNow:=true
+            else
+                if rem>.5 and midHit
+                    doHalf:=true
+                    rem:=.5
+                if tpHit
+                    exitNow:=true
+                    finalTP:=true
+        if doHalf
+            halfThisBar:=true
+            array.set(remains,k,.5)
+            label.set_text(lab,label.get_text(lab)+"\n50% MID "+str.tostring(midTouch,format.mintick))
+            line.new(bar_index,midTouch,bar_index+1,midTouch,color=color.orange,width=3)
+        if exitNow
+            label.set_text(lab,label.get_text(lab)+(rem<1 ? "\nREST " : "\nFULL ")+(finalTP ? "TP2" : "SL"))
+            array.remove(dirs,k)
+            array.remove(entries,k)
+            array.remove(stops,k)
+            array.remove(targets,k)
+            array.remove(remains,k)
+            array.remove(elines,k)
+            array.remove(slines,k)
+            array.remove(tlines,k)
+            array.remove(labels,k)
+plot(bbMiddle,"BB50 current closing middle",color=color.gray)
+plot(midTouch,"Causal intrabar middle-touch level",color=color.orange,style=plot.style_stepline)
+plot(low100,"100bar low",color=color.new(color.green,65))
+plot(high100,"100bar high",color=color.new(color.red,65))
+plotshape(volumeArmedNow,title="Volume50: arm",text="VOL",style=shape.diamond,location=location.belowbar,color=color.purple,size=size.tiny)
+bgcolor(volumeScan ? color.new(color.purple,93) : na)
+plotshape(buy,title="Long entry",text="L",style=shape.triangleup,location=location.belowbar,color=color.lime,size=size.small)
+plotshape(sell,title="Short entry",text="S",style=shape.triangledown,location=location.abovebar,color=color.red,size=size.small)
+plot(mlActive ? scoreL : na,"Long new-model score",display=display.data_window)
+plot(mlActive ? scoreS : na,"Short new-model score",display=display.data_window)
+plot(array.size(dirs),"Independent open lots",display=display.data_window)
+alertcondition(buy,"Long entry","Symmetric Vol50 LONG: independent SL/TP")
+alertcondition(sell,"Short entry","Symmetric Vol50 SHORT: independent SL/TP")
+alertcondition(halfThisBar,"MID50 half (confirmed-OHLC visualization)","MID50 half event confirmed; see own remaining lot SL/TP")
+
+var table modeStatus=table.new(position.top_right,1,1)
+if barstate.islast
+    text=bar_index<requiredBars ? "Need more candles: "+str.tostring(requiredBars+1) : mlActive ? "OLD15m ML | "+timeframe.period : "Candle rules | "+timeframe.period
+    if useML and not mlTimeframe
+        text+="\n15m ML disabled on this timeframe"
+    table.cell(modeStatus,0,0,text,text_color=color.white,bgcolor=color.new(color.black,25))
